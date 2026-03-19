@@ -17,6 +17,8 @@ export interface IssueFormData {
   description: string;
   labels: string[];
   assignee?: string;
+  payment_method?: 'ubounty' | 'direct' | '';
+  ubounty_url?: string;
 }
 
 export default function IssueCreationForm({ onSubmit, onCancel }: IssueCreationFormProps) {
@@ -30,7 +32,11 @@ export default function IssueCreationForm({ onSubmit, onCancel }: IssueCreationF
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit(formData);
+    onSubmit({
+      ...formData,
+      payment_method: isUbountySelected ? 'ubounty' : '',
+      ubounty_url: isUbountySelected ? `https://ubounty.io/create-bounty?issue_url=${encodeURIComponent(issueUrl)}` : '',
+    });
   };
 
   const handleInputChange = (field: keyof IssueFormData, value: string | string[]) => {
