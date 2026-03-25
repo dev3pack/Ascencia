@@ -9,11 +9,14 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Code2, User, Wrench } from "lucide-react"
 import { useRouter } from "next/navigation"
+import { useAccount } from "wagmi"
+import { supabase } from "@/lib/supabase"
 
 type UserRole = "contributor" | "maintainer" | null
 
 export default function OnboardingPage() {
   const router = useRouter()
+  const { address } = useAccount()
   const [step, setStep] = useState<"role" | "profile">("role")
   const [role, setRole] = useState<UserRole>(null)
 
@@ -22,10 +25,8 @@ export default function OnboardingPage() {
     setStep("profile")
   }
 
-  const handleComplete = () => {
-    // TODO: Save user profile data
-    console.log("[v0] Onboarding complete, role:", role)
-    if (role === "contributor") {
+  const handleComplete = (savedRole: Exclude<UserRole, null>) => {
+    if (savedRole === "contributor") {
       router.push("/browse")
     } else {
       router.push("/dashboard")
@@ -83,9 +84,19 @@ export default function OnboardingPage() {
             </div>
           </Card>
         ) : role === "contributor" ? (
-          <ContributorProfileForm onComplete={handleComplete} onBack={() => setStep("role")} />
+          <ContributorProfileForm
+            walletAddress={address ?? null}
+            role="contributor"
+            onComplete={() => handleComplete("contributor")}
+            onBack={() => setStep("role")}
+          />
         ) : (
-          <MaintainerProfileForm onComplete={handleComplete} onBack={() => setStep("role")} />
+          <MaintainerProfileForm
+            walletAddress={address ?? null}
+            role="maintainer"
+            onComplete={() => handleComplete("maintainer")}
+            onBack={() => setStep("role")}
+          />
         )}
       </div>
     </div>
@@ -101,9 +112,13 @@ type ContributorProfileData = {
 };
 
 function ContributorProfileForm({
+  walletAddress,
+  role,
   onComplete,
   onBack,
 }: {
+  walletAddress: string | null
+  role: "contributor"
   onComplete: () => void;
   onBack: () => void;
 }) {
@@ -114,6 +129,8 @@ function ContributorProfileForm({
     interests: "",
     experienceLevel: "intermediate",
   });
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const handleInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
@@ -125,9 +142,44 @@ function ContributorProfileForm({
     }));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    console.log("[v0] Contributor profile:", formData)
+    if (!walletAddress) {
+      setError("Connect your wallet to complete onboarding.")
+      return
+    }
+
+    setIsSaving(true)
+    setError(null)
+
+    const techStack = formData.techStack
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const topics = formData.interests
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+
+    const { error: upsertError } = await supabase.from("profiles").upsert(
+      {
+        wallet_address: walletAddress,
+        role,
+        bio: formData.bio || null,
+        tech_stack: techStack,
+        topics,
+        experience_level: formData.experienceLevel,
+      },
+      { onConflict: "wallet_address" },
+    )
+
+    if (upsertError) {
+      setError(upsertError.message)
+      setIsSaving(false)
+      return
+    }
+
+    setIsSaving(false)
     onComplete()
   }
 
@@ -137,6 +189,9 @@ function ContributorProfileForm({
         <h1 className="text-2xl font-bold mb-2">Set Up Your Profile</h1>
         <p className="text-muted-foreground">Tell us about your skills so we can match you with the right projects</p>
       </div>
+
+      {!walletAddress && <p className="text-sm text-muted-foreground mb-4">Connect your wallet to save your profile.</p>}
+      {error && <p className="text-sm text-destructive mb-4">{error}</p>}
 
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="space-y-2">
@@ -148,6 +203,7 @@ function ContributorProfileForm({
             onChange={handleInputChange}
             required
             className="bg-background"
+            disabled={isSaving}
           />
         </div>
 
@@ -159,6 +215,7 @@ function ContributorProfileForm({
             value={formData.bio}
             onChange={handleInputChange}
             className="w-full min-h-24 px-3 py-2 rounded-md border border-input bg-background text-foreground"
+            disabled={isSaving}
           />
         </div>
 
@@ -171,6 +228,7 @@ function ContributorProfileForm({
             onChange={handleInputChange}
             required
             className="bg-background"
+            disabled={isSaving}
           />
           <p className="text-xs text-muted-foreground">Comma-separated list of technologies you work with</p>
         </div>
@@ -183,6 +241,7 @@ function ContributorProfileForm({
             value={formData.interests}
             onChange={handleInputChange}
             className="bg-background"
+            disabled={isSaving}
           />
           <p className="text-xs text-muted-foreground">What types of projects interest you?</p>
         </div>
@@ -194,6 +253,7 @@ function ContributorProfileForm({
             value={formData.experienceLevel}
             onChange={handleInputChange}
             className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground"
+            disabled={isSaving}
           >
             <option value="beginner">Beginner</option>
             <option value="intermediate">Intermediate</option>
@@ -205,8 +265,8 @@ function ContributorProfileForm({
           <Button type="button" variant="outline" onClick={onBack} className="bg-transparent">
             Back
           </Button>
-          <Button type="submit" className="flex-1">
-            Complete Setup
+          <Button type="submit" className="flex-1" disabled={!walletAddress || isSaving}>
+            {isSaving ? "Saving…" : "Complete Setup"}
           </Button>
         </div>
       </form>
@@ -221,9 +281,13 @@ type MaintainerProfileData = {
 };
 
 function MaintainerProfileForm({
+  walletAddress,
+  role,
   onComplete,
   onBack,
 }: {
+  walletAddress: string | null
+  role: "maintainer"
   onComplete: () => void;
   onBack: () => void;
 }) {
@@ -232,6 +296,8 @@ function MaintainerProfileForm({
     organization: "",
     bio: "",
   });
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const handleInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
@@ -243,9 +309,32 @@ function MaintainerProfileForm({
     }));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    console.log("[v0] Maintainer profile:", formData)
+    if (!walletAddress) {
+      setError("Connect your wallet to complete onboarding.")
+      return
+    }
+
+    setIsSaving(true)
+    setError(null)
+
+    const { error: upsertError } = await supabase.from("profiles").upsert(
+      {
+        wallet_address: walletAddress,
+        role,
+        bio: formData.bio || null,
+      },
+      { onConflict: "wallet_address" },
+    )
+
+    if (upsertError) {
+      setError(upsertError.message)
+      setIsSaving(false)
+      return
+    }
+
+    setIsSaving(false)
     onComplete()
   }
 
@@ -255,6 +344,9 @@ function MaintainerProfileForm({
         <h1 className="text-2xl font-bold mb-2">Set Up Your Profile</h1>
         <p className="text-muted-foreground">Tell us about yourself and your projects</p>
       </div>
+
+      {!walletAddress && <p className="text-sm text-muted-foreground mb-4">Connect your wallet to save your profile.</p>}
+      {error && <p className="text-sm text-destructive mb-4">{error}</p>}
 
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="space-y-2">
@@ -266,6 +358,7 @@ function MaintainerProfileForm({
             onChange={handleInputChange}
             required
             className="bg-background"
+            disabled={isSaving}
           />
         </div>
 
@@ -277,6 +370,7 @@ function MaintainerProfileForm({
             value={formData.organization}
             onChange={handleInputChange}
             className="bg-background"
+            disabled={isSaving}
           />
         </div>
 
@@ -288,6 +382,7 @@ function MaintainerProfileForm({
             value={formData.bio}
             onChange={handleInputChange}
             className="w-full min-h-24 px-3 py-2 rounded-md border border-input bg-background text-foreground"
+            disabled={isSaving}
           />
         </div>
 
@@ -295,8 +390,8 @@ function MaintainerProfileForm({
           <Button type="button" variant="outline" onClick={onBack} className="bg-transparent">
             Back
           </Button>
-          <Button type="submit" className="flex-1">
-            Complete Setup
+          <Button type="submit" className="flex-1" disabled={!walletAddress || isSaving}>
+            {isSaving ? "Saving…" : "Complete Setup"}
           </Button>
         </div>
       </form>

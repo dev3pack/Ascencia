@@ -1,82 +1,133 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Code2, Star, GitFork, ExternalLink, User, AlertCircle, Clock } from "lucide-react"
+import { Code2, Star, GitFork, ExternalLink, User, AlertCircle } from "lucide-react"
 import Link from "next/link"
+import { useParams } from "next/navigation"
+import { useAccount } from "wagmi"
+import { supabase } from "@/lib/supabase"
 
-// Mock data
-const mockRepo = {
-  id: 1,
-  name: "base-defi-protocol",
-  description: "Decentralized finance protocol built on Base with advanced yield strategies",
-  owner: "BaseDAO",
-  stars: 234,
-  forks: 45,
-  techStack: ["Solidity", "TypeScript", "React"],
-  topics: ["DeFi", "Smart Contracts"],
-  githubUrl: "https://github.com/basedao/base-defi-protocol",
-  website: "https://basedefi.example.com",
-  readme:
-    "A comprehensive DeFi protocol that enables users to maximize their yields through automated strategies on the Base blockchain. Features include liquidity pools, yield farming, and governance.",
+type RepoDetailRow = {
+  id: string
+  github_owner: string
+  github_repo: string
+  full_name: string
+  description: string | null
+  stars: number | null
+  forks: number | null
+  project: {
+    id: string
+    name: string
+    slug: string
+    description: string | null
+    website_url: string | null
+    tech_stack: string[] | null
+    topics: string[] | null
+  } | null
 }
 
-const mockIssues = [
-  {
-    id: 1,
-    title: "Add support for new token pairs",
-    description: "We need to add support for USDC/ETH and DAI/ETH pairs in the liquidity pool contract.",
-    difficulty: "intermediate",
-    status: "open",
-    labels: ["enhancement", "smart-contracts"],
-    applicants: 2,
-    estimatedTime: "2-3 days",
-    isGoodFirstIssue: false,
-  },
-  {
-    id: 2,
-    title: "Fix UI responsiveness on mobile",
-    description: "The dashboard doesn't display correctly on mobile devices. Need to improve responsive design.",
-    difficulty: "beginner",
-    status: "open",
-    labels: ["bug", "frontend", "good-first-issue"],
-    applicants: 0,
-    estimatedTime: "1 day",
-    isGoodFirstIssue: true,
-  },
-  {
-    id: 3,
-    title: "Implement gas optimization for swap function",
-    description: "The swap function is consuming too much gas. Need to optimize the contract logic.",
-    difficulty: "advanced",
-    status: "open",
-    labels: ["optimization", "smart-contracts"],
-    applicants: 1,
-    estimatedTime: "3-5 days",
-    isGoodFirstIssue: false,
-  },
-  {
-    id: 4,
-    title: "Add unit tests for staking contract",
-    description: "Write comprehensive unit tests for the staking contract to ensure security.",
-    difficulty: "intermediate",
-    status: "open",
-    labels: ["testing", "good-first-issue"],
-    applicants: 0,
-    estimatedTime: "2 days",
-    isGoodFirstIssue: true,
-  },
-]
+type IssueRow = {
+  id: string
+  title: string
+  description: string | null
+  difficulty: "easy" | "medium" | "hard" | null
+  status: string | null
+  is_good_first_issue: boolean | null
+  url: string
+}
 
 export default function RepoDetailPage() {
-  // const params = useParams()
-  const [selectedIssue, setSelectedIssue] = useState<number | null>(null)
-  const [showApplicationModal, setShowApplicationModal] = useState(false)
+  const params = useParams<{ id: string }>()
+  const repoId = params?.id
 
-  const handleApply = (issueId: number) => {
+  const { address } = useAccount()
+
+  const [repo, setRepo] = useState<RepoDetailRow | null>(null)
+  const [issues, setIssues] = useState<IssueRow[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const [selectedIssue, setSelectedIssue] = useState<string | null>(null)
+  const [showApplicationModal, setShowApplicationModal] = useState(false)
+  const [applicationMessage, setApplicationMessage] = useState("")
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function load() {
+      if (!repoId) return
+      setIsLoading(true)
+      setError(null)
+
+      const { data: repoRow, error: repoError } = await supabase
+        .from("repositories")
+        .select(
+          `
+          id,
+          github_owner,
+          github_repo,
+          full_name,
+          description,
+          stars,
+          forks,
+          project:projects (
+            id,
+            name,
+            slug,
+            description,
+            website_url,
+            tech_stack,
+            topics
+          )
+        `,
+        )
+        .eq("id", repoId)
+        .single()
+
+      if (repoError) {
+        if (!cancelled) setError(repoError.message)
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      if (!cancelled) setRepo((repoRow ?? null) as RepoDetailRow | null)
+
+      const { data: issueRows, error: issueError } = await supabase
+        .from("issues")
+        .select("id,title,description,difficulty,status,is_good_first_issue,url")
+        .eq("repo_id", repoId)
+        .eq("status", "open")
+        .order("created_at", { ascending: false })
+        .limit(50)
+
+      if (issueError) {
+        if (!cancelled) setError(issueError.message)
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      if (!cancelled) setIssues((issueRows ?? []) as IssueRow[])
+      if (!cancelled) setIsLoading(false)
+    }
+
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [repoId])
+
+  const repoDisplayName = useMemo(() => repo?.project?.name || repo?.full_name || "", [repo])
+  const repoOwner = useMemo(() => repo?.github_owner || "", [repo])
+
+  const handleApply = (issueId: string) => {
     setSelectedIssue(issueId)
+    setApplicationMessage("")
+    setSubmitError(null)
     setShowApplicationModal(true)
   }
 
@@ -109,34 +160,47 @@ export default function RepoDetailPage() {
       </header>
 
       <div className="container mx-auto px-4 py-8">
+        {error && (
+          <Card className="p-6 bg-card border-border mb-6">
+            <p className="text-sm text-destructive">Failed to load repository: {error}</p>
+          </Card>
+        )}
+
+        {isLoading && (
+          <Card className="p-6 bg-card border-border mb-6">
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          </Card>
+        )}
+
         {/* Repo Header */}
-        <Card className="p-6 bg-card border-border mb-6">
+        {!isLoading && !error && repo && (
+          <Card className="p-6 bg-card border-border mb-6">
           <div className="flex items-start justify-between mb-4">
             <div>
-              <h1 className="text-3xl font-bold mb-2">{mockRepo.name}</h1>
-              <p className="text-muted-foreground">by {mockRepo.owner}</p>
+              <h1 className="text-3xl font-bold mb-2">{repoDisplayName}</h1>
+              <p className="text-muted-foreground">by {repoOwner}</p>
             </div>
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-1 text-muted-foreground">
                 <Star className="h-5 w-5" />
-                {mockRepo.stars}
+                {repo.stars ?? 0}
               </div>
               <div className="flex items-center gap-1 text-muted-foreground">
                 <GitFork className="h-5 w-5" />
-                {mockRepo.forks}
+                {repo.forks ?? 0}
               </div>
             </div>
           </div>
 
-          <p className="text-lg mb-4 leading-relaxed">{mockRepo.description}</p>
+          <p className="text-lg mb-4 leading-relaxed">{repo.description ?? repo.project?.description ?? ""}</p>
 
           <div className="flex flex-wrap gap-2 mb-4">
-            {mockRepo.techStack.map((tech) => (
+            {(repo.project?.tech_stack ?? []).map((tech) => (
               <Badge key={tech} variant="secondary">
                 {tech}
               </Badge>
             ))}
-            {mockRepo.topics.map((topic) => (
+            {(repo.project?.topics ?? []).map((topic) => (
               <Badge key={topic} variant="outline">
                 {topic}
               </Badge>
@@ -145,28 +209,31 @@ export default function RepoDetailPage() {
 
           <div className="flex gap-3">
             <Button variant="outline" className="gap-2 bg-transparent" asChild>
-              <a href={mockRepo.githubUrl} target="_blank" rel="noopener noreferrer">
+              <a href={`https://github.com/${repo.full_name}`} target="_blank" rel="noopener noreferrer">
                 <ExternalLink className="h-4 w-4" />
                 View on GitHub
               </a>
             </Button>
-            {mockRepo.website && (
+            {repo.project?.website_url && (
               <Button variant="outline" className="gap-2 bg-transparent" asChild>
-                <a href={mockRepo.website} target="_blank" rel="noopener noreferrer">
+                <a href={repo.project.website_url} target="_blank" rel="noopener noreferrer">
                   <ExternalLink className="h-4 w-4" />
                   Website
                 </a>
               </Button>
             )}
           </div>
-        </Card>
+          </Card>
+        )}
 
         <div className="grid lg:grid-cols-3 gap-6">
           {/* About Section */}
           <aside className="lg:col-span-1">
             <Card className="p-6 bg-card border-border">
               <h2 className="font-semibold mb-4">About</h2>
-              <p className="text-sm text-muted-foreground leading-relaxed">{mockRepo.readme}</p>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {repo?.project?.description ?? repo?.description ?? "No description available."}
+              </p>
             </Card>
           </aside>
 
@@ -178,48 +245,49 @@ export default function RepoDetailPage() {
             </div>
 
             <div className="space-y-4">
-              {mockIssues.map((issue) => (
+              {!isLoading && !error && issues.length === 0 && (
+                <Card className="p-6 bg-card border-border">
+                  <p className="text-sm text-muted-foreground">No open issues found for this repository.</p>
+                </Card>
+              )}
+
+              {issues.map((issue) => (
                 <Card key={issue.id} className="p-6 bg-card border-border">
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-2">
                         <h3 className="text-lg font-semibold">{issue.title}</h3>
-                        {issue.isGoodFirstIssue && (
+                        {issue.is_good_first_issue && (
                           <Badge variant="default" className="bg-chart-3 text-chart-3-foreground">
                             Good First Issue
                           </Badge>
                         )}
                       </div>
-                      <p className="text-muted-foreground mb-3 leading-relaxed">{issue.description}</p>
+                      <p className="text-muted-foreground mb-3 leading-relaxed">{issue.description ?? ""}</p>
                     </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2 mb-4">
-                    {issue.labels.map((label) => (
-                      <Badge key={label} variant="outline" className="text-xs">
-                        {label}
-                      </Badge>
-                    ))}
                   </div>
 
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-4 text-sm text-muted-foreground">
                       <div className="flex items-center gap-1">
                         <AlertCircle className="h-4 w-4" />
-                        {issue.difficulty}
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Clock className="h-4 w-4" />
-                        {issue.estimatedTime}
+                        {issue.difficulty ?? "unknown"}
                       </div>
                       <div className="flex items-center gap-1">
                         <User className="h-4 w-4" />
-                        {issue.applicants} applicants
+                        View on GitHub
                       </div>
                     </div>
-                    <Button onClick={() => handleApply(issue.id)} size="sm">
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" className="bg-transparent" asChild>
+                        <a href={issue.url} target="_blank" rel="noopener noreferrer">
+                          <ExternalLink className="h-4 w-4" />
+                        </a>
+                      </Button>
+                      <Button onClick={() => handleApply(issue.id)} size="sm">
                       Apply
                     </Button>
+                    </div>
                   </div>
                 </Card>
               ))}
@@ -237,12 +305,40 @@ export default function RepoDetailPage() {
               Tell the maintainer why you&apos;re a good fit for this issue and your approach to solving it.
             </p>
 
+            {!address && (
+              <Card className="p-3 bg-card border-border mb-4">
+                <p className="text-sm text-muted-foreground">Connect your wallet to apply.</p>
+              </Card>
+            )}
+
+            {submitError && <p className="text-sm text-destructive mb-3">{submitError}</p>}
+
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault()
-                console.log("[v0] Application submitted for issue:", selectedIssue)
+                if (!selectedIssue) return
+                if (!address) {
+                  setSubmitError("Wallet not connected.")
+                  return
+                }
+
+                setIsSubmitting(true)
+                setSubmitError(null)
+
+                const { error: insertError } = await supabase.from("applications").insert({
+                  contributor_wallet: address,
+                  issue_id: selectedIssue,
+                  cover_letter: applicationMessage,
+                })
+
+                if (insertError) {
+                  setSubmitError(insertError.message)
+                  setIsSubmitting(false)
+                  return
+                }
+
+                setIsSubmitting(false)
                 setShowApplicationModal(false)
-                // TODO: Submit application
               }}
               className="space-y-4"
             >
@@ -255,6 +351,9 @@ export default function RepoDetailPage() {
                   placeholder="Explain your experience and approach..."
                   className="w-full min-h-32 px-3 py-2 rounded-md border border-input bg-background text-foreground"
                   required
+                  value={applicationMessage}
+                  onChange={(e) => setApplicationMessage(e.target.value)}
+                  disabled={isSubmitting}
                 />
               </div>
 
@@ -264,10 +363,11 @@ export default function RepoDetailPage() {
                   variant="outline"
                   onClick={() => setShowApplicationModal(false)}
                   className="flex-1 bg-transparent"
+                  disabled={isSubmitting}
                 >
                   Cancel
                 </Button>
-                <Button type="submit" className="flex-1">
+                <Button type="submit" className="flex-1" disabled={!address || isSubmitting}>
                   Submit Application
                 </Button>
               </div>

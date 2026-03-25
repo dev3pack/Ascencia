@@ -23,7 +23,6 @@ import { ConnectButton } from "@rainbow-me/rainbowkit";
 
 export default function Home() {
   const { isFrameReady, setFrameReady } = useMiniKit();
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   // const [email, setEmail] = useState("");
   // // eslint-disable-next-line @typescript-eslint/no-unused-vars
   // const [error, setError] = useState("");

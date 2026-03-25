@@ -1,72 +1,137 @@
 "use client"
 
-import { SetStateAction, useState } from "react"
+import { SetStateAction, useEffect, useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Code2, Search, Star, GitFork, AlertCircle, User } from "lucide-react"
 import Link from "next/link"
+import { supabase } from "@/lib/supabase"
 
-// Mock data for demonstration
-const mockRepos = [
-  {
-    id: 1,
-    name: "base-defi-protocol",
-    description: "Decentralized finance protocol built on Base with advanced yield strategies",
-    owner: "BaseDAO",
-    stars: 234,
-    forks: 45,
-    techStack: ["Solidity", "TypeScript", "React"],
-    topics: ["DeFi", "Smart Contracts"],
-    openIssues: 12,
-    goodFirstIssues: 3,
-  },
-  {
-    id: 2,
-    name: "nft-marketplace",
-    description: "Full-featured NFT marketplace with gasless transactions on Base",
-    owner: "BaseNFT",
-    stars: 189,
-    forks: 32,
-    techStack: ["Solidity", "Next.js", "Tailwind"],
-    topics: ["NFTs", "Marketplace"],
-    openIssues: 8,
-    goodFirstIssues: 2,
-  },
-  {
-    id: 3,
-    name: "ai-agent-framework",
-    description: "Framework for building autonomous AI agents on Base blockchain",
-    owner: "BaseAI",
-    stars: 456,
-    forks: 78,
-    techStack: ["Python", "TypeScript", "Solidity"],
-    topics: ["AI", "Agents"],
-    openIssues: 15,
-    goodFirstIssues: 5,
-  },
-  {
-    id: 4,
-    name: "gaming-sdk",
-    description: "SDK for integrating Base blockchain into gaming applications",
-    owner: "BaseGaming",
-    stars: 312,
-    forks: 56,
-    techStack: ["TypeScript", "Unity", "Solidity"],
-    topics: ["Gaming", "SDK"],
-    openIssues: 10,
-    goodFirstIssues: 4,
-  },
-]
+type RepoRow = {
+  id: string
+  github_owner: string
+  github_repo: string
+  full_name: string
+  description: string | null
+  stars: number | null
+  forks: number | null
+  open_issues_count: number | null
+  project: {
+    id: string
+    name: string
+    slug: string
+    tech_stack: string[] | null
+    topics: string[] | null
+  } | null
+}
 
-const allTechStack = ["Solidity", "TypeScript", "React", "Next.js", "Python", "Tailwind", "Unity"]
-const allTopics = ["DeFi", "NFTs", "AI", "Gaming", "Smart Contracts", "Marketplace", "Agents", "SDK"]
+type IssueCountRow = {
+  repo_id: string
+  is_good_first_issue: boolean | null
+  status: string | null
+}
 
 export default function BrowsePage() {
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedTech, setSelectedTech] = useState<string[]>([])
   const [selectedTopics, setSelectedTopics] = useState<string[]>([])
+  const [repos, setRepos] = useState<RepoRow[]>([])
+  const [issueCountsByRepoId, setIssueCountsByRepoId] = useState<Record<string, { open: number; goodFirst: number }>>(
+    {},
+  )
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function load() {
+      setIsLoading(true)
+      setError(null)
+
+      const { data: repoData, error: repoError } = await supabase
+        .from("repositories")
+        .select(
+          `
+          id,
+          github_owner,
+          github_repo,
+          full_name,
+          description,
+          stars,
+          forks,
+          open_issues_count,
+          project:projects (
+            id,
+            name,
+            slug,
+            tech_stack,
+            topics
+          )
+        `,
+        )
+        .eq("is_active", true)
+        .order("stars", { ascending: false })
+        .limit(50)
+
+      if (repoError) {
+        if (!cancelled) setError(repoError.message)
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      const repoRows = (repoData ?? []) as unknown as RepoRow[]
+      if (!cancelled) setRepos(repoRows)
+
+      const repoIds = repoRows.map((r) => r.id)
+      if (repoIds.length === 0) {
+        if (!cancelled) setIssueCountsByRepoId({})
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      const { data: issueRows, error: issueError } = await supabase
+        .from("issues")
+        .select("repo_id,is_good_first_issue,status")
+        .in("repo_id", repoIds)
+
+      if (issueError) {
+        if (!cancelled) setError(issueError.message)
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      const counts: Record<string, { open: number; goodFirst: number }> = {}
+      for (const row of (issueRows ?? []) as IssueCountRow[]) {
+        const repoId = row.repo_id
+        if (!counts[repoId]) counts[repoId] = { open: 0, goodFirst: 0 }
+        if (row.status === "open") counts[repoId].open += 1
+        if (row.status === "open" && row.is_good_first_issue) counts[repoId].goodFirst += 1
+      }
+      if (!cancelled) setIssueCountsByRepoId(counts)
+      if (!cancelled) setIsLoading(false)
+    }
+
+    load()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const allTechStack = useMemo(() => {
+    const s = new Set<string>()
+    for (const r of repos) for (const t of r.project?.tech_stack ?? []) s.add(t)
+    return Array.from(s).sort()
+  }, [repos])
+
+  const allTopics = useMemo(() => {
+    const s = new Set<string>()
+    for (const r of repos) for (const t of r.project?.topics ?? []) s.add(t)
+    return Array.from(s).sort()
+  }, [repos])
 
   const toggleFilter = (item: string, list: string[], setter: (list: string[]) => void) => {
     if (list.includes(item)) {
@@ -76,15 +141,20 @@ export default function BrowsePage() {
     }
   }
 
-  const filteredRepos = mockRepos.filter((repo) => {
+  const filteredRepos = repos.filter((repo) => {
+    const displayName = repo.project?.name || repo.full_name
+    const description = repo.description ?? ""
+
     const matchesSearch =
       searchQuery === "" ||
-      repo.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      repo.description.toLowerCase().includes(searchQuery.toLowerCase())
+      displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      description.toLowerCase().includes(searchQuery.toLowerCase())
 
-    const matchesTech = selectedTech.length === 0 || selectedTech.some((tech) => repo.techStack.includes(tech))
+    const techStack = repo.project?.tech_stack ?? []
+    const matchesTech = selectedTech.length === 0 || selectedTech.some((tech) => techStack.includes(tech))
 
-    const matchesTopics = selectedTopics.length === 0 || selectedTopics.some((topic) => repo.topics.includes(topic))
+    const topics = repo.project?.topics ?? []
+    const matchesTopics = selectedTopics.length === 0 || selectedTopics.some((topic) => topics.includes(topic))
 
     return matchesSearch && matchesTech && matchesTopics
   })
@@ -152,6 +222,7 @@ export default function BrowsePage() {
                       {tech}
                     </Badge>
                   ))}
+                  {allTechStack.length === 0 && <p className="text-xs text-muted-foreground">No tech stack data</p>}
                 </div>
               </div>
 
@@ -169,6 +240,7 @@ export default function BrowsePage() {
                       {topic}
                     </Badge>
                   ))}
+                  {allTopics.length === 0 && <p className="text-xs text-muted-foreground">No topic data</p>}
                 </div>
               </div>
 
@@ -199,57 +271,81 @@ export default function BrowsePage() {
             </div>
 
             <div className="space-y-4">
-              {filteredRepos.map((repo) => (
-                <Link key={repo.id} href={`/repo/${repo.id}`}>
-                  <Card className="p-6 bg-card border-border hover:border-primary transition-colors cursor-pointer">
-                    <div className="flex items-start justify-between mb-3">
-                      <div>
-                        <h3 className="text-xl font-semibold mb-1">{repo.name}</h3>
-                        <p className="text-sm text-muted-foreground">by {repo.owner}</p>
-                      </div>
-                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                        <div className="flex items-center gap-1">
-                          <Star className="h-4 w-4" />
-                          {repo.stars}
+              {error && (
+                <Card className="p-6 bg-card border-border">
+                  <p className="text-sm text-destructive">Failed to load projects: {error}</p>
+                </Card>
+              )}
+
+              {isLoading && (
+                <Card className="p-6 bg-card border-border">
+                  <p className="text-sm text-muted-foreground">Loading projects…</p>
+                </Card>
+              )}
+
+              {!isLoading &&
+                !error &&
+                filteredRepos.map((repo) => {
+                  const displayName = repo.project?.name || repo.full_name
+                  const owner = repo.github_owner
+                  const techStack = repo.project?.tech_stack ?? []
+                  const topics = repo.project?.topics ?? []
+                  const counts = issueCountsByRepoId[repo.id]
+                  const openIssues = counts?.open ?? repo.open_issues_count ?? 0
+                  const goodFirstIssues = counts?.goodFirst ?? 0
+
+                  return (
+                    <Link key={repo.id} href={`/repo/${repo.id}`}>
+                      <Card className="p-6 bg-card border-border hover:border-primary transition-colors cursor-pointer">
+                        <div className="flex items-start justify-between mb-3">
+                          <div>
+                            <h3 className="text-xl font-semibold mb-1">{displayName}</h3>
+                            <p className="text-sm text-muted-foreground">by {owner}</p>
+                          </div>
+                          <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                            <div className="flex items-center gap-1">
+                              <Star className="h-4 w-4" />
+                              {repo.stars ?? 0}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <GitFork className="h-4 w-4" />
+                              {repo.forks ?? 0}
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-1">
-                          <GitFork className="h-4 w-4" />
-                          {repo.forks}
+
+                        <p className="text-muted-foreground mb-4 leading-relaxed">{repo.description ?? ""}</p>
+
+                        <div className="flex flex-wrap gap-2 mb-4">
+                          {techStack.map((tech) => (
+                            <Badge key={tech} variant="secondary">
+                              {tech}
+                            </Badge>
+                          ))}
+                          {topics.map((topic) => (
+                            <Badge key={topic} variant="outline">
+                              {topic}
+                            </Badge>
+                          ))}
                         </div>
-                      </div>
-                    </div>
 
-                    <p className="text-muted-foreground mb-4 leading-relaxed">{repo.description}</p>
+                        <div className="flex items-center gap-4 text-sm">
+                          <div className="flex items-center gap-1 text-muted-foreground">
+                            <AlertCircle className="h-4 w-4" />
+                            {openIssues} open issues
+                          </div>
+                          {goodFirstIssues > 0 && (
+                            <Badge variant="default" className="bg-chart-3 text-chart-3-foreground">
+                              {goodFirstIssues} good first issues
+                            </Badge>
+                          )}
+                        </div>
+                      </Card>
+                    </Link>
+                  )
+                })}
 
-                    <div className="flex flex-wrap gap-2 mb-4">
-                      {repo.techStack.map((tech) => (
-                        <Badge key={tech} variant="secondary">
-                          {tech}
-                        </Badge>
-                      ))}
-                      {repo.topics.map((topic) => (
-                        <Badge key={topic} variant="outline">
-                          {topic}
-                        </Badge>
-                      ))}
-                    </div>
-
-                    <div className="flex items-center gap-4 text-sm">
-                      <div className="flex items-center gap-1 text-muted-foreground">
-                        <AlertCircle className="h-4 w-4" />
-                        {repo.openIssues} open issues
-                      </div>
-                      {repo.goodFirstIssues > 0 && (
-                        <Badge variant="default" className="bg-chart-3 text-chart-3-foreground">
-                          {repo.goodFirstIssues} good first issues
-                        </Badge>
-                      )}
-                    </div>
-                  </Card>
-                </Link>
-              ))}
-
-              {filteredRepos.length === 0 && (
+              {!isLoading && !error && filteredRepos.length === 0 && (
                 <Card className="p-12 bg-card border-border text-center">
                   <p className="text-muted-foreground">No projects found matching your filters</p>
                   <Button

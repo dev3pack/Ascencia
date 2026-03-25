@@ -1,17 +1,56 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Code2, User, Plus, GitPullRequest, AlertCircle, CheckCircle, Clock } from "lucide-react"
 import Link from "next/link"
+import { useAccount } from "wagmi"
+import { supabase } from "@/lib/supabase"
 
 type UserRole = "contributor" | "maintainer"
 
 export default function DashboardPage() {
-  // TODO: Get actual user role from auth context
-  const [userRole] = useState<UserRole>("contributor")
+  const { address } = useAccount()
+  const [userRole, setUserRole] = useState<UserRole>("contributor")
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadRole() {
+      if (!address) {
+        setIsLoading(false)
+        return
+      }
+
+      setIsLoading(true)
+      setError(null)
+
+      const { data, error: profileError } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("wallet_address", address)
+        .maybeSingle()
+
+      if (profileError) {
+        if (!cancelled) setError(profileError.message)
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      const role = data?.role
+      if (!cancelled) setUserRole(role === "maintainer" || role === "both" ? "maintainer" : "contributor")
+      if (!cancelled) setIsLoading(false)
+    }
+
+    loadRole()
+    return () => {
+      cancelled = true
+    }
+  }, [address])
 
   return (
     <div className="min-h-screen bg-background">
@@ -36,35 +75,118 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      {userRole === "contributor" ? <ContributorDashboard /> : <MaintainerDashboard />}
+      <div className="container mx-auto px-4 py-6">
+        {!address && (
+          <Card className="p-6 bg-card border-border">
+            <p className="text-sm text-muted-foreground">Connect your wallet to view your dashboard.</p>
+          </Card>
+        )}
+
+        {error && (
+          <Card className="p-6 bg-card border-border">
+            <p className="text-sm text-destructive">Failed to load dashboard: {error}</p>
+          </Card>
+        )}
+
+        {isLoading && address && (
+          <Card className="p-6 bg-card border-border">
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          </Card>
+        )}
+      </div>
+
+      {!isLoading && address && !error && (userRole === "contributor" ? <ContributorDashboard /> : <MaintainerDashboard />)}
     </div>
   )
 }
 
 function ContributorDashboard() {
-  const appliedIssues = [
-    {
-      id: 1,
-      title: "Fix UI responsiveness on mobile",
-      repo: "base-defi-protocol",
-      status: "pending",
-      appliedDate: "2 days ago",
-    },
-    {
-      id: 2,
-      title: "Add unit tests for staking contract",
-      repo: "nft-marketplace",
-      status: "accepted",
-      appliedDate: "5 days ago",
-    },
-    {
-      id: 3,
-      title: "Implement dark mode",
-      repo: "gaming-sdk",
-      status: "in-progress",
-      appliedDate: "1 week ago",
-    },
-  ]
+  const { address } = useAccount()
+  const [applications, setApplications] = useState<
+    { id: string; status: string; applied_at: string; issueTitle: string; repoName: string }[]
+  >([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    type ApplicationQueryRow = {
+      id: string
+      status: string | null
+      applied_at: string
+      issue:
+        | {
+            id: string
+            title: string | null
+            repo:
+              | {
+                  id: string
+                  full_name: string | null
+                }
+              | null
+          }
+        | null
+    }
+
+    async function load() {
+      if (!address) return
+      setIsLoading(true)
+      setError(null)
+
+      const { data, error: queryError } = await supabase
+        .from("applications")
+        .select(
+          `
+          id,
+          status,
+          applied_at,
+          issue:issues (
+            id,
+            title,
+            repo:repositories (
+              id,
+              full_name
+            )
+          )
+        `,
+        )
+        .eq("contributor_wallet", address)
+        .order("applied_at", { ascending: false })
+        .limit(50)
+
+      if (queryError) {
+        if (!cancelled) setError(queryError.message)
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      const rows =
+        ((data ?? []) as ApplicationQueryRow[]).map((row) => ({
+          id: row.id as string,
+          status: row.status ?? "pending",
+          applied_at: row.applied_at as string,
+          issueTitle: row.issue?.title ?? "Unknown issue",
+          repoName: row.issue?.repo?.full_name ?? "Unknown repo",
+        })) ?? []
+
+      if (!cancelled) setApplications(rows)
+      if (!cancelled) setIsLoading(false)
+    }
+
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [address])
+
+  const stats = useMemo(() => {
+    const applied = applications.length
+    const accepted = applications.filter((a) => a.status === "approved" || a.status === "accepted").length
+    const inProgress = 0
+    const completed = 0
+    return { applied, accepted, inProgress, completed }
+  }, [applications])
 
   const notifications = [
     {
@@ -101,7 +223,7 @@ function ContributorDashboard() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground mb-1">Applied</p>
-              <p className="text-2xl font-bold">3</p>
+              <p className="text-2xl font-bold">{stats.applied}</p>
             </div>
             <AlertCircle className="h-8 w-8 text-muted-foreground" />
           </div>
@@ -111,7 +233,7 @@ function ContributorDashboard() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground mb-1">Accepted</p>
-              <p className="text-2xl font-bold">1</p>
+              <p className="text-2xl font-bold">{stats.accepted}</p>
             </div>
             <CheckCircle className="h-8 w-8 text-chart-3" />
           </div>
@@ -121,7 +243,7 @@ function ContributorDashboard() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground mb-1">In Progress</p>
-              <p className="text-2xl font-bold">1</p>
+              <p className="text-2xl font-bold">{stats.inProgress}</p>
             </div>
             <Clock className="h-8 w-8 text-primary" />
           </div>
@@ -131,7 +253,7 @@ function ContributorDashboard() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground mb-1">Completed</p>
-              <p className="text-2xl font-bold">5</p>
+              <p className="text-2xl font-bold">{stats.completed}</p>
             </div>
             <GitPullRequest className="h-8 w-8 text-accent" />
           </div>
@@ -149,12 +271,32 @@ function ContributorDashboard() {
           </div>
 
           <div className="space-y-4">
-            {appliedIssues.map((issue) => (
-              <Card key={issue.id} className="p-6 bg-card border-border">
+            {error && (
+              <Card className="p-6 bg-card border-border">
+                <p className="text-sm text-destructive">Failed to load applications: {error}</p>
+              </Card>
+            )}
+
+            {isLoading && (
+              <Card className="p-6 bg-card border-border">
+                <p className="text-sm text-muted-foreground">Loading applications…</p>
+              </Card>
+            )}
+
+            {!isLoading && !error && applications.length === 0 && (
+              <Card className="p-6 bg-card border-border">
+                <p className="text-sm text-muted-foreground">No applications yet.</p>
+              </Card>
+            )}
+
+            {!isLoading &&
+              !error &&
+              applications.map((issue) => (
+                <Card key={issue.id} className="p-6 bg-card border-border">
                 <div className="flex items-start justify-between mb-3">
                   <div>
-                    <h3 className="text-lg font-semibold mb-1">{issue.title}</h3>
-                    <p className="text-sm text-muted-foreground">{issue.repo}</p>
+                    <h3 className="text-lg font-semibold mb-1">{issue.issueTitle}</h3>
+                    <p className="text-sm text-muted-foreground">{issue.repoName}</p>
                   </div>
                   <Badge
                     variant={
@@ -165,7 +307,7 @@ function ContributorDashboard() {
                   </Badge>
                 </div>
                 <div className="flex items-center justify-between">
-                  <p className="text-sm text-muted-foreground">Applied {issue.appliedDate}</p>
+                  <p className="text-sm text-muted-foreground">Applied {new Date(issue.applied_at).toLocaleDateString()}</p>
                   <Button variant="outline" size="sm" className="bg-transparent">
                     View Details
                   </Button>
@@ -195,49 +337,122 @@ function ContributorDashboard() {
 }
 
 function MaintainerDashboard() {
-  const repos = [
-    {
-      id: 1,
-      name: "base-defi-protocol",
-      openIssues: 12,
-      pendingApplicants: 5,
-      activeContributors: 3,
-    },
-    {
-      id: 2,
-      name: "nft-marketplace",
-      openIssues: 8,
-      pendingApplicants: 2,
-      activeContributors: 2,
-    },
-  ]
+  const { address } = useAccount()
+  const [repos, setRepos] = useState<{ id: string; name: string; openIssues: number }[]>([])
+  const [pendingApplications, setPendingApplications] = useState<
+    { id: string; contributor: string; issue: string; repo: string; appliedDate: string; message: string }[]
+  >([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const pendingApplications = [
-    {
-      id: 1,
-      contributor: "alice_dev",
-      issue: "Fix UI responsiveness on mobile",
-      repo: "base-defi-protocol",
-      appliedDate: "2 hours ago",
-      message: "I have 3 years of experience with responsive design...",
-    },
-    {
-      id: 2,
-      contributor: "bob_builder",
-      issue: "Add unit tests for staking contract",
-      repo: "base-defi-protocol",
-      appliedDate: "5 hours ago",
-      message: "I'm familiar with Hardhat testing framework...",
-    },
-    {
-      id: 3,
-      contributor: "charlie_code",
-      issue: "Implement gas optimization",
-      repo: "nft-marketplace",
-      appliedDate: "1 day ago",
-      message: "I've optimized several smart contracts before...",
-    },
-  ]
+  useEffect(() => {
+    let cancelled = false
+
+    type RepoRow = { id: string; full_name: string | null; open_issues_count: number | null }
+    type IssueRow = { id: string; repo_id: string; title: string }
+    type ApplicationRow = {
+      id: string
+      contributor_wallet: string
+      issue_id: string
+      status: string | null
+      cover_letter: string | null
+      applied_at: string
+    }
+
+    async function load() {
+      if (!address) return
+      setIsLoading(true)
+      setError(null)
+
+      const { data: repoRows, error: repoError } = await supabase
+        .from("repositories")
+        .select("id,full_name,open_issues_count")
+        .eq("maintainer_wallet", address)
+        .order("updated_at", { ascending: false })
+        .limit(50)
+
+      if (repoError) {
+        if (!cancelled) setError(repoError.message)
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      const repoIds = ((repoRows ?? []) as RepoRow[]).map((r) => r.id)
+      const repoList = ((repoRows ?? []) as RepoRow[]).map((r) => ({
+        id: r.id,
+        name: r.full_name ?? "Unknown repo",
+        openIssues: r.open_issues_count ?? 0,
+      }))
+      if (!cancelled) setRepos(repoList)
+
+      if (repoIds.length === 0) {
+        if (!cancelled) setPendingApplications([])
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      const { data: issueRows, error: issueError } = await supabase
+        .from("issues")
+        .select("id,repo_id,title")
+        .in("repo_id", repoIds)
+
+      if (issueError) {
+        if (!cancelled) setError(issueError.message)
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      const issueIds = ((issueRows ?? []) as IssueRow[]).map((i) => i.id)
+      if (issueIds.length === 0) {
+        if (!cancelled) setPendingApplications([])
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      const issuesById = new Map<string, { title: string; repoId: string }>()
+      for (const i of (issueRows ?? []) as IssueRow[]) {
+        issuesById.set(i.id, { title: i.title, repoId: i.repo_id })
+      }
+
+      const repoNameById = new Map<string, string>()
+      for (const r of repoList) repoNameById.set(r.id, r.name)
+
+      const { data: appRows, error: appError } = await supabase
+        .from("applications")
+        .select("id,contributor_wallet,issue_id,status,cover_letter,applied_at")
+        .in("issue_id", issueIds)
+        .eq("status", "pending")
+        .order("applied_at", { ascending: false })
+        .limit(50)
+
+      if (appError) {
+        if (!cancelled) setError(appError.message)
+        if (!cancelled) setIsLoading(false)
+        return
+      }
+
+      const apps = ((appRows ?? []) as ApplicationRow[]).map((a) => {
+        const issue = issuesById.get(a.issue_id)
+        const repoName = issue ? repoNameById.get(issue.repoId) : undefined
+        return {
+          id: a.id,
+          contributor: a.contributor_wallet ?? "Unknown",
+          issue: issue?.title ?? "Unknown issue",
+          repo: repoName ?? "Unknown repo",
+          appliedDate: new Date(a.applied_at).toLocaleDateString(),
+          message: a.cover_letter ?? "",
+        }
+      })
+
+      if (!cancelled) setPendingApplications(apps)
+      if (!cancelled) setIsLoading(false)
+    }
+
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [address])
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -257,7 +472,25 @@ function MaintainerDashboard() {
       <div className="mb-8">
         <h2 className="text-2xl font-bold mb-4">Your Repositories</h2>
         <div className="grid md:grid-cols-2 gap-4">
-          {repos.map((repo) => (
+          {error && (
+            <Card className="p-6 bg-card border-border md:col-span-2">
+              <p className="text-sm text-destructive">Failed to load maintainer data: {error}</p>
+            </Card>
+          )}
+
+          {isLoading && (
+            <Card className="p-6 bg-card border-border md:col-span-2">
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            </Card>
+          )}
+
+          {!isLoading && !error && repos.length === 0 && (
+            <Card className="p-6 bg-card border-border md:col-span-2">
+              <p className="text-sm text-muted-foreground">No repositories found for this maintainer wallet.</p>
+            </Card>
+          )}
+
+          {!isLoading && !error && repos.map((repo) => (
             <Card key={repo.id} className="p-6 bg-card border-border">
               <h3 className="text-xl font-semibold mb-4">{repo.name}</h3>
               <div className="grid grid-cols-3 gap-4">
@@ -266,11 +499,11 @@ function MaintainerDashboard() {
                   <p className="text-sm text-muted-foreground">Open Issues</p>
                 </div>
                 <div>
-                  <p className="text-2xl font-bold text-primary">{repo.pendingApplicants}</p>
+                  <p className="text-2xl font-bold text-primary">—</p>
                   <p className="text-sm text-muted-foreground">Pending</p>
                 </div>
                 <div>
-                  <p className="text-2xl font-bold text-chart-3">{repo.activeContributors}</p>
+                  <p className="text-2xl font-bold text-chart-3">—</p>
                   <p className="text-sm text-muted-foreground">Active</p>
                 </div>
               </div>
@@ -286,6 +519,12 @@ function MaintainerDashboard() {
       <div>
         <h2 className="text-2xl font-bold mb-4">Pending Applications</h2>
         <div className="space-y-4">
+          {!isLoading && !error && pendingApplications.length === 0 && (
+            <Card className="p-6 bg-card border-border">
+              <p className="text-sm text-muted-foreground">No pending applications.</p>
+            </Card>
+          )}
+
           {pendingApplications.map((application) => (
             <Card key={application.id} className="p-6 bg-card border-border">
               <div className="flex items-start justify-between mb-4">
